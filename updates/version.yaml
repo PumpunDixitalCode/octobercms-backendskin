@@ -29,3 +29,6 @@
     - Support Octobercms 3.1
 2.1.1:
     - Fix issue with AssetMaker
+
+2.2.0:
+    - Support Octobercms 4.2

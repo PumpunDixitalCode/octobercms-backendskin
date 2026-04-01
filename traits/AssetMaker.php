@@ -30,9 +30,14 @@ trait AssetMaker
     protected $assetBundles = ['js' => [], 'css' => []];
 
     /**
-     * @var string assetPath specifies a public or relative path to the asset directory.
+     * @var string assetPath specifies the relative path to the asset directory.
      */
     public $assetPath;
+
+    /**
+     * @var string assetUrlPath specifies the public path to the asset directory.
+     */
+    public $assetUrlPath;
 
     /**
      * @var string assetLocalPath specifies a local path to the asset directory for the combiner.
@@ -45,9 +50,10 @@ trait AssetMaker
     protected $assetDefaults = ['build' => 'core'];
 
     /**
-     * flushAssets disables the use, and subequent broadcast, of assets. This is useful
+     * flushAssets disables the use, and subsequent broadcast, of assets. This is useful
      * to call during an AJAX request to speed things up. This method works
      * by specifically targeting the hasAssetsDefined method.
+     *
      * @return void
      */
     public function flushAssets()
@@ -57,7 +63,7 @@ trait AssetMaker
     }
 
     /**
-     * Outputs `<link>` and `<script>` tags to load assets previously added with addJs and addCss method calls
+     * makeAssets outputs `<link>` and `<script>` tags to load assets previously added with addJs and addCss method calls
      * @param string $type Return an asset collection of a given type (css, rss, js) or null for all.
      * @return string
      */
@@ -136,10 +142,46 @@ trait AssetMaker
     }
 
     /**
-     * addJsBundle includes a JS asset to the bundled combiner stream
+     * addJsBundle includes a JS asset to the bundled combiner pipeline
      */
     public function addJsBundle(string $name, $attributes = [])
     {
+        /**
+         * @event system.assets.beforeBundleAsset
+         * Provides an opportunity to modify adding an js bundle.
+         *
+         * The parameters provided are:
+         * object `$this`: The current asset maker object
+         * string `$type`: The type of the asset being bundled
+         * string `$name`: The name to the asset being bundled
+         * mixed `$attributes`: The array of attributes for the asset being bundled.
+         *
+         * The name and attributes parameters are provided by reference for modification.
+         * This event is also a halting event, so returning false will prevent the
+         * current asset from being bundled.
+         *
+         * Example usage:
+         *
+         *     Event::listen('system.assets.beforeBundleAsset', function (AssetMaker $assetMaker, string $type, string $name, array $attributes) {
+         *         $assetMaker->addJs($name, $attributes);
+         *         return false;
+         *     });
+         *
+         * Or
+         *
+         *     $this->bindEvent('assets.beforeBundleAsset', function (AssetMaker $assetMaker, string $type, string $name, array $attributes) {
+         *         $assetMaker->addJs($name, $attributes);
+         *         return false;
+         *     });
+         *
+         */
+        if (
+            (method_exists($this, 'fireEvent') && ($this->fireEvent('assets.beforeBundleAsset', [$this, 'js', &$name, &$attributes], true) === false)) ||
+            (Event::fire('system.assets.beforeBundleAsset', [$this, 'js', &$name, &$attributes], true) === false)
+        ) {
+            return;
+        }
+
         $jsPath = $this->getAssetPath($name);
         $attributes = $this->processAssetAttributes($attributes);
 
@@ -172,10 +214,46 @@ trait AssetMaker
     }
 
     /**
-     * addCssBundle includes a CSS asset to the bundled combiner stream
+     * addCssBundle includes a CSS asset to the bundled combiner pipeline
      */
     public function addCssBundle(string $name, $attributes = [])
     {
+        /**
+         * @event system.assets.beforeBundleAsset
+         * Provides an opportunity to modify adding an css bundle.
+         *
+         * The parameters provided are:
+         * object `$this`: The current asset maker object
+         * string `$type`: The type of the asset being bundled
+         * string `$name`: The name to the asset being bundled
+         * mixed `$attributes`: The array of attributes for the asset being bundled.
+         *
+         * The name and attributes parameters are provided by reference for modification.
+         * This event is also a halting event, so returning false will prevent the
+         * current asset from being bundled.
+         *
+         * Example usage:
+         *
+         *     Event::listen('system.assets.beforeBundleAsset', function (AssetMaker $assetMaker, string $type, string $name, array $attributes) {
+         *         $assetMaker->addCss($name, $attributes);
+         *         return false;
+         *     });
+         *
+         * Or
+         *
+         *     $this->bindEvent('assets.beforeBundleAsset', function (AssetMaker $assetMaker, string $type, string $name, array $attributes) {
+         *         $assetMaker->addCss($name, $attributes);
+         *         return false;
+         *     });
+         *
+         */
+        if (
+            (method_exists($this, 'fireEvent') && ($this->fireEvent('assets.beforeBundleAsset', [$this, 'css', &$name, &$attributes], true) === false)) ||
+            (Event::fire('system.assets.beforeBundleAsset', [$this, 'css', &$name, &$attributes], true) === false)
+        ) {
+            return;
+        }
+
         $cssPath = $this->getAssetPath($name);
         $attributes = $this->processAssetAttributes($attributes);
 
@@ -213,9 +291,9 @@ trait AssetMaker
             return '';
         }
 
-        $assetPath = $localPath ?: $this->assetLocalPath;
+        $assetPath = $localPath ?: base_path($this->assetPath);
 
-        return Url::to(CombineAssets::combine($assets, $assetPath));
+        return CombineAssets::combine($assets, $assetPath);
     }
 
     /**
@@ -245,6 +323,43 @@ trait AssetMaker
     }
 
     /**
+     * getAssetPathsWithAttributes returns an array of all registered asset paths
+     * with their attributes, suitable for use with ajax()->asset().
+     *
+     * Returns format: ['js' => [path => attributes, ...], 'css' => [...], ...]
+     *
+     * @return array
+     */
+    public function getAssetPathsWithAttributes()
+    {
+        $this->removeDuplicateAssets();
+
+        // Internal attributes to be excluded from output
+        $reserved = ['build'];
+
+        $assets = [];
+
+        foreach ($this->assets as $type => $collection) {
+            $assets[$type] = [];
+            foreach ($collection as $asset) {
+                $path = $this->getAssetEntryBuildPath($asset);
+                $attributes = array_except(array_get($asset, 'attributes', []), $reserved);
+                $assets[$type][$path] = $attributes;
+            }
+        }
+
+        foreach (['js', 'css'] as $bundleType) {
+            foreach ($this->combineBundledAssets($bundleType) as $asset) {
+                $path = $this->getAssetEntryBuildPath($asset);
+                $attributes = array_except(array_get($asset, 'attributes', []), $reserved);
+                $assets[$bundleType][$path] = $attributes;
+            }
+        }
+
+        return $assets;
+    }
+
+    /**
      * getAssetPath locates a file based on it's definition. If the file starts with
      * a forward slash, it will be returned in context of the application public path,
      * otherwise it will be returned in context of the asset path.
@@ -254,7 +369,11 @@ trait AssetMaker
      */
     public function getAssetPath($fileName, $assetPath = null)
     {
-        if (starts_with($fileName, ['//', 'http://', 'https://'])) {
+        if (
+            str_starts_with($fileName, '//') ||
+            str_starts_with($fileName, 'http://') ||
+            str_starts_with($fileName, 'https://')
+        ) {
             return $fileName;
         }
 
@@ -262,7 +381,7 @@ trait AssetMaker
             $assetPath = $this->assetPath;
         }
 
-        if (substr($fileName, 0, 1) == '/' || $assetPath === null) {
+        if ($assetPath === null || substr($fileName, 0, 1) == '/') {
             return $fileName;
         }
 
@@ -342,12 +461,16 @@ trait AssetMaker
      */
     protected function getAssetScheme(string $asset): string
     {
-        if (starts_with($asset, ['//', 'http://', 'https://'])) {
+        if (
+            str_starts_with($asset, '//') ||
+            str_starts_with($asset, 'http://') ||
+            str_starts_with($asset, 'https://')
+        ) {
             return $asset;
         }
 
-        if (substr($asset, 0, 1) == '/') {
-            $asset = Url::asset($asset);
+        if (substr($asset, 0, 1) === '/') {
+            $asset = Request::getBasePath() . $asset;
         }
 
         return $asset;
@@ -397,13 +520,12 @@ trait AssetMaker
     {
         $relativePath = File::symbolizePath($relativePath);
 
-        if (!starts_with($relativePath, [base_path()])) {
+        if (!str_starts_with($relativePath, base_path())) {
             $relativePath = base_path($relativePath);
         }
 
         return $relativePath;
     }
-
     /**
      * renderAssetAttributes takes an asset definition and returns the necessary HTML output
      */
